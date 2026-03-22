@@ -92,7 +92,6 @@ With defaults, the generator produces:
 |---|---|---|---|
 | `$1` | `GC` | *(JVM default)* | Optional GC selector: `G1`, `Parallel`, `Serial`, `Shenandoah`, or `ZGC` |
 
-Note: `ZGC` is handled specially — it maps to `-XX:+UseZGC` rather than `-XX:+UseZGCGC`.
 
 **What it runs**
 
