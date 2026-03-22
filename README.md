@@ -4,14 +4,21 @@ A shell script toolkit for generating synthetic Java applications that stress-te
 
 ## Why This Exists
 
-Project Leyden's AOT caching (JEP 483/514) delivers the most measurable wins on workloads dominated by class loading. This generator lets you dial up the exact pressures that expose those gains:
+Project Leyden targets two distinct startup phases, and this generator applies pressure to both — which is worth understanding before reading benchmark results.
+
+**JEP 483 — AOT Class Loading & Linking** caches the loaded and linked state of classes. The clearest wins come from:
 
 - Thousands of classes spread across many JARs, each requiring ZIP decompression and manifest reads at startup
-- Deep 3-level abstract inheritance chains (`AbstractBase → AbstractLayer1Base → Layer1ClassN`)
-- Two interfaces with multiple default methods on every class
-- Static initializers (`HashMap` + `ArrayList` population) on every class
-- Explicit `Class.forName()` loops in `main()` that force sequential `<clinit>` chains
 - One JAR per package, so the JVM must open and search each one in turn
+- Deep 3-level abstract inheritance chains (`AbstractBase → AbstractLayer1Base → Layer1ClassN`)
+- Two interfaces with multiple default methods on every class, driving interface vtable resolution at link time
+
+**JEP 514 — AOT Method Compilation** caches compiled native code, which is where `<clinit>` cost can be reduced:
+
+- Static initializers (`HashMap` + `ArrayList` population) on every class — these run at *initialization* time, not load/link time, so JEP 483 does not help here
+- Explicit `Class.forName()` loops in `main()` that force sequential `<clinit>` execution across JAR boundaries
+
+The measured speedup in `run.sh` reflects both mechanisms together. See [Relationship to Project Leyden](#relationship-to-project-leyden) for notes on isolating each one.
 
 The result is a configurable, reproducible benchmark you can tune from a few hundred classes up to tens of thousands.
 
@@ -218,7 +225,15 @@ IComputable          ITransformable
 
 ## Relationship to Project Leyden
 
-The `-XX:AOTCacheOutput` / `-XX:AOTCache` flags used in the generated `run.sh` correspond to JEP 483 (JDK 24+). This workload is designed to be representative of microservice-style applications where startup time is dominated by class loading and linking rather than computation. Scaling up `total_l1` and `l2_per_l1` lets you model larger dependency graphs and observe how Leyden's AOT cache warm-up benefits scale with classpath size.
+The `-XX:AOTCacheOutput` / `-XX:AOTCache` flags used in the generated `run.sh` invoke JEP 483 (AOT Class Loading & Linking, JDK 24+), which caches loaded and linked class state. The loading/linking pressure in this benchmark — many JARs, deep inheritance chains, interface resolution — is directly attributable to JEP 483.
+
+The static initializers and `Class.forName()` chains are *initialization* cost (`<clinit>`), which JEP 483 does not cache. Any speedup there comes from JEP 514 (AOT Method Compilation) compiling `<clinit>` methods ahead of time.
+
+**For a controlled experiment**, consider two variants:
+- **Loading/linking only**: many classes and JARs, minimal or no static initializers — isolates JEP 483 gains cleanly
+- **With initialization overhead**: add heavy `<clinit>` work — shows where the current ceiling is and what JEP 514 contributes
+
+Scaling up `total_l1` and `l2_per_l1` models larger dependency graphs. Whether you want to tell the JEP 483 story, the JEP 514 story, or both determines which variant to run.
 
 ## License
 

@@ -4,15 +4,19 @@
 # Pressure from:
 #   - 5,000+ classes spread across derived packages → one JAR per package
 #   - JVM must open/search each JAR (ZIP decompression, manifest reads)
-#   - Static initializers on every class (HashMap + ArrayList population)
 #   - 3-level abstract inheritance chain per concrete class
 #   - 2 interfaces with default methods on every class
-#   - Explicit Class.forName() loop forcing sequential clinit in main()
+#   - Explicit Class.forName() loop forcing sequential class loading in main()
 #
-# Usage: ./generate_classes.sh [output_dir] [total_l1] [l2_per_l1] [l1_per_pkg]
-#   total_l1    = total number of Layer1 classes          (default: 100)
-#   l2_per_l1   = Layer2 classes per Layer1               (default: 50)
-#   l1_per_pkg  = Layer1 classes per package/JAR          (default: 10)
+# Static initializers are controlled by init_size:
+#   init_size > 0  → HashMap + ArrayList <clinit> work  (initialization cost; JEP 514 territory)
+#   init_size = 0  → no static initializers             (pure load/link pressure; JEP 483)
+#
+# Usage: ./generate_classes.sh [output_dir] [total_l1] [l2_per_l1] [l1_per_pkg] [init_size]
+#   total_l1    = total number of Layer1 classes                  (default: 100)
+#   l2_per_l1   = Layer2 classes per Layer1                       (default: 50)
+#   l1_per_pkg  = Layer1 classes per package/JAR                  (default: 10)
+#   init_size   = entries in static initializer per L2 class      (default: 50; 0 = no clinit)
 #
 # PKG_COUNT is derived: ceil(total_l1 / l1_per_pkg)
 # Default: ceil(100/10)=10 pkgs × (10 L1 + 500 L2) = 5,100 classes + base + root
@@ -23,6 +27,12 @@ OUTPUT_DIR="${1:-generated_java}"
 TOTAL_L1="${2:-100}"
 L2_PER_L1="${3:-50}"
 L1_PER_PKG="${4:-10}"
+INIT_SIZE="${5:-50}"
+
+# Derived init entries per class tier (scale with INIT_SIZE; 0 = no static initializers)
+L2_INIT=$INIT_SIZE
+L1_INIT=$(( INIT_SIZE * 2 ))
+ABSTRACT_INIT=$(( INIT_SIZE * 4 ))
 
 # Derive package count — ceiling division so remainders get their own package
 PKG_COUNT=$(( (TOTAL_L1 + L1_PER_PKG - 1) / L1_PER_PKG ))
@@ -44,6 +54,11 @@ echo "Packages (JARs):      $PKG_COUNT"
 echo "Layer1 per package:   $L1_PER_PKG"
 echo "Layer2 per Layer1:    $L2_PER_L1"
 echo "Total classes:        $TOTAL"
+if [[ $INIT_SIZE -gt 0 ]]; then
+    echo "Static init entries:  $INIT_SIZE per L2 (x2 L1, x4 abstracts) — load/link + init pressure"
+else
+    echo "Static init entries:  0 — pure load/link pressure (JEP 483)"
+fi
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -81,6 +96,7 @@ public interface ITransformable {
 }
 JAVA
 
+if [[ $INIT_SIZE -gt 0 ]]; then
 cat > "$(pkg_src base)/AbstractBase.java" << JAVA
 package $BASE_FULL;
 
@@ -94,7 +110,7 @@ public abstract class AbstractBase implements IComputable, ITransformable {
     private static final Map<String, String> REGISTRY = new HashMap<>();
     private static final List<String>        CATALOG  = new ArrayList<>();
     static {
-        for (int i = 0; i < 200; i++) {
+        for (int i = 0; i < ${ABSTRACT_INIT}; i++) {
             REGISTRY.put("base_key_" + i, "base_val_" + i);
             CATALOG.add("base_entry_" + i);
         }
@@ -112,7 +128,27 @@ public abstract class AbstractBase implements IComputable, ITransformable {
     public static int registrySize() { return REGISTRY.size(); }
 }
 JAVA
+else
+cat > "$(pkg_src base)/AbstractBase.java" << JAVA
+package $BASE_FULL;
 
+public abstract class AbstractBase implements IComputable, ITransformable {
+
+    protected final String name;
+    private int callCount = 0;
+
+    protected AbstractBase(String name) { this.name = name; }
+
+    public String getName()   { return name; }
+    public int getCallCount() { return callCount; }
+    protected void tick()     { callCount++; }
+
+    public static int registrySize() { return 0; }
+}
+JAVA
+fi
+
+if [[ $INIT_SIZE -gt 0 ]]; then
 cat > "$(pkg_src base)/AbstractLayer1Base.java" << JAVA
 package $BASE_FULL;
 
@@ -126,7 +162,7 @@ public abstract class AbstractLayer1Base extends AbstractBase {
     private static final Map<Integer, Long> INDEX_MAP = new HashMap<>();
     private static final List<Integer>      KEY_LIST  = new ArrayList<>();
     static {
-        for (int i = 0; i < 200; i++) {
+        for (int i = 0; i < ${ABSTRACT_INIT}; i++) {
             INDEX_MAP.put(i, (long) i * 13);
             KEY_LIST.add(i * 7);
         }
@@ -141,6 +177,22 @@ public abstract class AbstractLayer1Base extends AbstractBase {
     public static int indexSize() { return INDEX_MAP.size(); }
 }
 JAVA
+else
+cat > "$(pkg_src base)/AbstractLayer1Base.java" << JAVA
+package $BASE_FULL;
+
+public abstract class AbstractLayer1Base extends AbstractBase {
+
+    protected AbstractLayer1Base(String name) { super(name); }
+
+    public abstract String collectNames();
+    public abstract int    computeAll(int x);
+    public abstract String transformAll(String s);
+
+    public static int indexSize() { return 0; }
+}
+JAVA
+fi
 
 echo "Compiling base package..."
 find "$(pkg_src base)" -name "*.java" > /tmp/gen_sources.txt
@@ -169,7 +221,8 @@ for p in $(seq 0 $(( PKG_COUNT - 1 ))); do
         GLOBAL_I=$(( L1_OFFSET + li ))
         for j in $(seq 0 $(( L2_PER_L1 - 1 ))); do
             CLASS="Layer2Class_${GLOBAL_I}_${j}"
-            cat > "$PKG_DIR/${CLASS}.java" << JAVA
+            if [[ $INIT_SIZE -gt 0 ]]; then
+                cat > "$PKG_DIR/${CLASS}.java" << JAVA
 package $PKG_FULL;
 
 import ${BASE_FULL}.AbstractBase;
@@ -184,7 +237,7 @@ public class $CLASS extends AbstractBase {
     private static final Map<String, Integer> INIT_MAP  = new HashMap<>();
     private static final List<String>         INIT_LIST = new ArrayList<>();
     static {
-        for (int k = 0; k < 50; k++) {
+        for (int k = 0; k < ${L2_INIT}; k++) {
             INIT_MAP.put("${CLASS}_key_" + k, k * $j + $GLOBAL_I);
             INIT_LIST.add("${CLASS}_item_" + k);
         }
@@ -209,6 +262,34 @@ public class $CLASS extends AbstractBase {
     public String  upper(String s) { return transformUpper(s); }
 }
 JAVA
+            else
+                cat > "$PKG_DIR/${CLASS}.java" << JAVA
+package $PKG_FULL;
+
+import ${BASE_FULL}.AbstractBase;
+
+public class $CLASS extends AbstractBase {
+
+    public $CLASS() { super("$CLASS"); }
+
+    @Override
+    public int compute(int x) {
+        tick();
+        return x * $j + $GLOBAL_I;
+    }
+
+    @Override
+    public String transform(String s) {
+        tick();
+        return "[$CLASS:" + s + "]";
+    }
+
+    public boolean isEven(int n)   { return (n % 2) == 0; }
+    public String  label()         { return computeLabel($j); }
+    public String  upper(String s) { return transformUpper(s); }
+}
+JAVA
+            fi
         done
     done
 
@@ -223,7 +304,9 @@ JAVA
             for j in $(seq 0 $(( L2_PER_L1 - 1 ))); do
                 echo "import ${PKG_FULL}.Layer2Class_${GLOBAL_I}_${j};"
             done
-            cat << JAVA
+
+            if [[ $INIT_SIZE -gt 0 ]]; then
+                cat << JAVA
 
 import java.util.HashMap;
 import java.util.ArrayList;
@@ -235,22 +318,44 @@ public class $CLASS extends AbstractLayer1Base {
     private static final Map<String, Integer> INIT_MAP  = new HashMap<>();
     private static final List<String>         INIT_LIST = new ArrayList<>();
     static {
-        for (int k = 0; k < 100; k++) {
+        for (int k = 0; k < ${L1_INIT}; k++) {
             INIT_MAP.put("${CLASS}_key_" + k, k * $GLOBAL_I);
             INIT_LIST.add("${CLASS}_item_" + k);
         }
     }
 
 JAVA
+            else
+                cat << JAVA
+
+public class $CLASS extends AbstractLayer1Base {
+
+JAVA
+            fi
+
             for j in $(seq 0 $(( L2_PER_L1 - 1 ))); do
                 echo "    private final Layer2Class_${GLOBAL_I}_${j} child${j} = new Layer2Class_${GLOBAL_I}_${j}();"
             done
-            cat << JAVA
+
+            if [[ $INIT_SIZE -gt 0 ]]; then
+                cat << JAVA
 
     public $CLASS() { super("$CLASS"); }
 
     @Override public int    compute(int x)       { tick(); return INIT_MAP.size() + $GLOBAL_I; }
     @Override public String transform(String s)  { tick(); return "[$CLASS:" + s + "]"; }
+JAVA
+            else
+                cat << JAVA
+
+    public $CLASS() { super("$CLASS"); }
+
+    @Override public int    compute(int x)       { tick(); return $GLOBAL_I; }
+    @Override public String transform(String s)  { tick(); return "[$CLASS:" + s + "]"; }
+JAVA
+            fi
+
+            cat << JAVA
 
     @Override
     public String collectNames() {
@@ -344,8 +449,8 @@ JAVA
     public static void main(String[] args) throws Exception {
         long t0 = System.nanoTime();
 
-        // Force sequential clinit on one leaf class per L1 class via reflection.
-        // Each call crosses a JAR boundary, triggering ZIP entry lookup + clinit.
+        // Force sequential class loading on one leaf class per L1 class via reflection.
+        // Each call crosses a JAR boundary, triggering ZIP entry lookup.
         for (int gi = 0; gi < $TOTAL_L1; gi++) {
             int p = gi / $L1_PER_PKG;
             Class.forName("${BASE_PKG}.pkg" + p + ".Layer2Class_" + gi + "_0");
@@ -395,9 +500,10 @@ echo "  -> $JARS/root.jar"
 CLASSPATH="$JARS/root.jar:$ALL_JARS"
 
 # Derive memory flags from class counts:
-#   heap    ~= L2 classes × 13KB (HashMap/ArrayList static init) × 1.5 + 512MB buffer
+#   heap    ~= L2 classes × (init_size/50 × 13KB) × 1.5 + 512MB buffer
 #   metaspace ~= total classes × 4KB + 256MB buffer
-_XMX_MB=$(( TOTAL_L2 * 13 * 3 / 2 / 1024 + 512 ))
+# When init_size=0, static init data is absent; heap floors at minimum.
+_XMX_MB=$(( TOTAL_L2 * INIT_SIZE * 39 / 100 / 1024 + 512 ))
 _XMX_GB=$(( (_XMX_MB + 1023) / 1024 ))
 XMX=$(( _XMX_GB < 2 ? 2 : _XMX_GB ))g
 _META_MB=$(( TOTAL * 4 / 1024 + 256 ))
@@ -407,7 +513,7 @@ MAX_META=$(( _META_GB < 1 ? 1 : _META_GB ))g
 cat > "$OUTPUT_DIR/run.sh" << SCRIPT
 #!/usr/bin/env bash
 # Auto-generated — run the benchmark
-# Classes: $TOTAL  (L1=$TOTAL_L1  L2=$TOTAL_L2  pkgs=$PKG_COUNT)
+# Classes: $TOTAL  (L1=$TOTAL_L1  L2=$TOTAL_L2  pkgs=$PKG_COUNT  init_size=$INIT_SIZE)
 #
 # Usage: ./run.sh [GC]
 #   GC  optional GC flag suffix: G1, Parallel, Serial, Shenandoah  (default: JVM default)
@@ -419,7 +525,7 @@ MAIN="${BASE_PKG}.root.RootClass"
 AOT_CACHE="\$(dirname "\$0")/app.aot"
 
 # Memory: heap ~${XMX}, metaspace ~${MAX_META}
-# Adjust if you hit OOM (rule of thumb: ~13KB heap per L2 class)
+# Adjust if you hit OOM (rule of thumb: ~13KB heap per L2 class at init_size=50)
 MEM="-Xmx${XMX} -XX:MaxMetaspaceSize=${MAX_META}"
 
 GC_FLAG=""
