@@ -408,6 +408,11 @@ cat > "$OUTPUT_DIR/run.sh" << SCRIPT
 #!/usr/bin/env bash
 # Auto-generated — run the benchmark
 # Classes: $TOTAL  (L1=$TOTAL_L1  L2=$TOTAL_L2  pkgs=$PKG_COUNT)
+#
+# Usage: ./run.sh [GC]
+#   GC  optional GC flag suffix: G1, Parallel, Serial, Shenandoah  (default: JVM default)
+#       ZGC is special: pass ZGC (not ZGCGC)
+#   e.g. ./run.sh ZGC  or  ./run.sh G1
 
 CLASSPATH="$CLASSPATH"
 MAIN="${BASE_PKG}.root.RootClass"
@@ -417,16 +422,27 @@ AOT_CACHE="\$(dirname "\$0")/app.aot"
 # Adjust if you hit OOM (rule of thumb: ~13KB heap per L2 class)
 MEM="-Xmx${XMX} -XX:MaxMetaspaceSize=${MAX_META}"
 
+GC_FLAG=""
+if [[ -n "\${1:-}" ]]; then
+    gc="\$1"
+    # ZGC flag is -XX:+UseZGC (not UseZGCGC); all others follow UseXxxGC pattern
+    if [[ "\$gc" == "ZGC" || "\$gc" == "zgc" ]]; then
+        GC_FLAG="-XX:+UseZGC"
+    else
+        GC_FLAG="-XX:+Use\${gc}GC"
+    fi
+fi
+
 echo "=== Plain run ==="
-java \$MEM -cp "\$CLASSPATH" "\$MAIN"
+java \$MEM \$GC_FLAG -cp "\$CLASSPATH" "\$MAIN"
 
 echo ""
 echo "=== Training run (creates \$AOT_CACHE) ==="
-java \$MEM -XX:AOTCacheOutput="\$AOT_CACHE" -cp "\$CLASSPATH" "\$MAIN"
+java \$MEM \$GC_FLAG -XX:AOTCacheOutput="\$AOT_CACHE" -cp "\$CLASSPATH" "\$MAIN"
 
 echo ""
 echo "=== AOT run ==="
-java \$MEM -XX:AOTCache="\$AOT_CACHE" -cp "\$CLASSPATH" "\$MAIN"
+java \$MEM \$GC_FLAG -XX:AOTCache="\$AOT_CACHE" -cp "\$CLASSPATH" "\$MAIN"
 SCRIPT
 chmod +x "$OUTPUT_DIR/run.sh"
 
