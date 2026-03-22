@@ -88,36 +88,7 @@ With defaults, the generator produces:
 
 **Arguments**
 
-| Position | Name | Default | Description |**Sample Output**
-
-Generated with `./generate_classes.sh generated_java 200 200 10` and run with ZGC (`./generated_java/run.sh ZGC`):
-
-```
-=== Plain run ===
-GC:          ZGC
-Packages:    20
-Classes:     40205
-Wall time:   7330 ms
-
-=== Training run ===
-GC:          ZGC
-Packages:    20
-Classes:     40205
-Wall time:   8270 ms
-Temporary AOTConfiguration recorded: app.aot.config
-Launching child process /home/ibrown/.sdkman/candidates/java/25.0.2-zulu/bin/java to assemble AOT cache app.aot using configuration app.aot.config
-Reading AOTConfiguration app.aot.config and writing AOTCache app.aot
-AOTCache creation is complete: app.aot 200642560 bytes
-Removed temporary AOT configuration file app.aot.config
-
-=== AOT run ===
-GC:          ZGC
-Packages:    20
-Classes:     40205
-Wall time:   3544 ms
-```
-
-The training run is expected to be slower than plain — it does a full run *and* drives the JVM's AOT recording and assembly pipeline. The cache itself (`app.aot`) came out at ~191 MB for 40K classes. The AOT run lands at **3,544 ms**, a **52% reduction** from the 7,330 ms cold baseline.
+| Position | Name | Default | Description |
 |---|---|---|---|
 | `$1` | `GC` | *(JVM default)* | Optional GC selector: `G1`, `Parallel`, `Serial`, `Shenandoah`, or `ZGC` |
 
@@ -140,8 +111,6 @@ Each run prints wall-clock startup time, total class count, package count, and t
 **Memory flags** are auto-derived from class counts at generation time:
 - Heap (`-Xmx`): ~13 KB per Layer2 class × 1.5 + 512 MB buffer, rounded up to nearest GB (minimum 2 GB)
 - Metaspace (`-XX:MaxMetaspaceSize`): ~4 KB per total class + 256 MB buffer, rounded up to nearest GB (minimum 1 GB)
-
-
 
 ---
 
@@ -214,7 +183,36 @@ IComputable          ITransformable
 
 `RootClass` holds a field instance of every Layer1 class, runs `Class.forName()` on one leaf per L1 class at startup, then calls `computeAll()` to traverse the entire tree.
 
+## Sample Output
 
+Generated with `./generate_classes.sh generated_java 200 200 10` and run with ZGC (`./generated_java/run.sh ZGC`):
+
+```
+=== Plain run ===
+GC:          ZGC
+Packages:    20
+Classes:     40205
+Wall time:   7330 ms
+
+=== Training run ===
+GC:          ZGC
+Packages:    20
+Classes:     40205
+Wall time:   8270 ms
+Temporary AOTConfiguration recorded: app.aot.config
+Launching child process /home/ibrown/.sdkman/candidates/java/25.0.2-zulu/bin/java to assemble AOT cache app.aot using configuration app.aot.config
+Reading AOTConfiguration app.aot.config and writing AOTCache app.aot
+AOTCache creation is complete: app.aot 200642560 bytes
+Removed temporary AOT configuration file app.aot.config
+
+=== AOT run ===
+GC:          ZGC
+Packages:    20
+Classes:     40205
+Wall time:   3544 ms
+```
+
+The training run is expected to be slower than plain — it does a full run *and* drives the JVM's AOT recording and assembly pipeline. The cache itself (`app.aot`) came out at ~191 MB for 40K classes. The AOT run lands at **3,544 ms**, a **52% reduction** from the 7,330 ms cold baseline.
 
 ## Relationship to Project Leyden
 
