@@ -1,4 +1,4 @@
-21# leyden-test-app-generator
+# leyden-test-app-generator
 
 A shell script toolkit for generating synthetic Java applications that stress-test class loading and linking at startup — purpose-built for benchmarking [Project Leyden](https://openjdk.org/projects/leyden/)'s AOT cache support in OpenJDK.
 
