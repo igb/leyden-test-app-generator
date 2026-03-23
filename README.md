@@ -1,4 +1,4 @@
-# leyden-test-app-generator
+21# leyden-test-app-generator
 
 A shell script toolkit for generating synthetic Java applications that stress-test class loading and linking at startup — purpose-built for benchmarking [Project Leyden](https://openjdk.org/projects/leyden/)'s AOT cache support in OpenJDK.
 
@@ -72,7 +72,7 @@ With defaults, the generator produces:
 
 **Requirements**
 
-- `javac` and `jar` on `PATH` (JDK 21+ recommended; JDK 24/25 for AOT cache flags)
+- `javac` and `jar` on `PATH` (JDK 25+ recommended)
 - Bash
 
 **Examples**
