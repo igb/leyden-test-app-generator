@@ -64,7 +64,7 @@ With defaults, the generator produces:
 
 **Requirements**
 
-- `javac` and `jar` on `PATH` (JDK 21+ recommended; JDK 24/25 for AOT cache flags)
+- `javac` and `jar` on `PATH` (JDK 25+ recommended)
 - Bash
 
 **Examples**
