@@ -4,21 +4,14 @@ A shell script toolkit for generating synthetic Java applications that stress-te
 
 ## Why This Exists
 
-Project Leyden targets two distinct startup phases, and this generator applies pressure to both — which is worth understanding before reading benchmark results.
-
 **JEP 483 — AOT Class Loading & Linking** caches the loaded and linked state of classes. The clearest wins come from:
 
 - Thousands of classes spread across many JARs, each requiring ZIP decompression and manifest reads at startup
 - One JAR per package, so the JVM must open and search each one in turn
-- Deep 3-level abstract inheritance chains (`AbstractBase → AbstractLayer1Base → Layer1ClassN`)
+- Deep 3-level abstract inheritance chain for Layer1 classes (`AbstractBase → AbstractLayer1Base → Layer1ClassN`)
 - Two interfaces with multiple default methods on every class, driving interface vtable resolution at link time
 
-**JEP 514 — AOT Method Compilation** caches compiled native code, which is where `<clinit>` cost can be reduced:
-
-- Static initializers (`HashMap` + `ArrayList` population) on every class — these run at *initialization* time, not load/link time, so JEP 483 does not help here
-- Explicit `Class.forName()` loops in `main()` that force sequential `<clinit>` execution across JAR boundaries
-
-The `init_size` parameter controls whether static initializers are generated at all (`0` = none), letting you isolate each phase. The measured speedup in `run.sh` reflects whichever mechanisms are active. See [Relationship to Project Leyden](#relationship-to-project-leyden) for the two-variant approach.
+No static initializers are generated — this benchmark isolates pure class loading and linking pressure so the measured speedup directly reflects JEP 483's contribution.
 
 The result is a configurable, reproducible benchmark you can tune from a few hundred classes up to tens of thousands.
 
@@ -33,7 +26,7 @@ Generates the Java source, compiles it, packages it into JARs, and emits a ready
 **Usage**
 
 ```bash
-./generate_classes.sh [output_dir] [total_l1] [l2_per_l1] [l1_per_pkg] [init_size]
+./generate_classes.sh [output_dir] [total_l1] [l2_per_l1] [l1_per_pkg]
 ```
 
 **Arguments**
@@ -44,7 +37,6 @@ Generates the Java source, compiles it, packages it into JARs, and emits a ready
 | `$2` | `total_l1` | `100` | Total number of Layer1 (mid-tier) classes |
 | `$3` | `l2_per_l1` | `50` | Layer2 leaf classes per Layer1 class |
 | `$4` | `l1_per_pkg` | `10` | Layer1 classes per package / JAR |
-| `$5` | `init_size` | `50` | Entries in each static initializer (`0` = no `<clinit>`, pure load/link pressure) |
 
 `PKG_COUNT` is derived automatically as `ceil(total_l1 / l1_per_pkg)`, so partial packages get their own JAR.
 
@@ -54,7 +46,7 @@ With defaults, the generator produces:
 - 10 packages × 10 Layer1 classes each = 100 Layer1 classes
 - 100 × 50 = 5,000 Layer2 leaf classes
 - Plus 2 interfaces and 2 abstract base classes
-- **Total: ~5,102 classes across 11 JARs** (`base.jar` + 10 `pkgN.jar` + `root.jar`)
+- **Total: 5,105 classes across 12 JARs** (`base.jar` + 10 `pkgN.jar` + `root.jar`)
 
 **Output layout**
 
@@ -78,15 +70,12 @@ With defaults, the generator produces:
 **Examples**
 
 ```bash
-# Larger scale, default init pressure
+# Default scale
+./generate_classes.sh
+
+# Larger scale
 ./generate_classes.sh big_app 500 100 20
 # → 25 packages, 500 L1 classes, 50,000 L2 classes, ~50,504 total
-
-# Pure load/link pressure — no static initializers (JEP 483 story)
-./generate_classes.sh demo_483 200 200 10 0
-
-# Full pressure — load/link + initialization overhead (JEP 483 + JEP 514)
-./generate_classes.sh demo_full 200 200 10
 ```
 
 ---
@@ -154,8 +143,8 @@ Wall time:   3544 ms
 
 The training run is expected to be slower than plain — it does a full run *and* drives the JVM's AOT recording and assembly pipeline. The cache itself (`app.aot`) came out at ~191 MB for 40K classes. The AOT run lands at **3,544 ms**, a **52% reduction** from the 7,330 ms cold baseline.
 
-**Memory flags** are auto-derived from class counts and `init_size` at generation time:
-- Heap (`-Xmx`): `init_size/50 × 13 KB` per Layer2 class × 1.5 + 512 MB buffer, rounded up to nearest GB (minimum 2 GB); floors at minimum when `init_size=0`
+**Memory flags** are auto-derived from class counts at generation time:
+- Heap (`-Xmx`): `2g` (fixed floor; no static initializer data)
 - Metaspace (`-XX:MaxMetaspaceSize`): ~4 KB per total class + 256 MB buffer, rounded up to nearest GB (minimum 1 GB)
 
 ---
@@ -199,7 +188,7 @@ The recovered `./generate_classes.sh ...` line is copy-pasteable to recreate the
 ## Quick Start
 
 ```bash
-# Generate the default benchmark (~5,100 classes, with static init)
+# Generate the default benchmark (~5,100 classes)
 ./generate_classes.sh
 
 # Run all three trials (plain / training / AOT)
@@ -212,31 +201,19 @@ The recovered `./generate_classes.sh ...` line is copy-pasteable to recreate the
 ./inspect_generated.sh generated_java
 ```
 
-**Two-variant setup** for a controlled Leyden comparison:
-
-```bash
-# Variant 1: pure load/link pressure — isolates JEP 483
-./generate_classes.sh demo_483 200 200 10 0
-./demo_483/run.sh ZGC
-
-# Variant 2: load/link + initialization — shows JEP 514 ceiling
-./generate_classes.sh demo_full 200 200 10
-./demo_full/run.sh ZGC
-```
-
 ## Class Hierarchy
 
 ```
 IComputable          ITransformable
     └──────────────────┘
            │
-     AbstractBase           (static init: 4×init_size entries — omitted when init_size=0)
+     AbstractBase
            │
-   AbstractLayer1Base       (static init: 4×init_size entries — omitted when init_size=0)
+   AbstractLayer1Base
            │
-    Layer1Class_N           (static init: 2×init_size entries; holds L2_PER_L1 children)
+    Layer1Class_N           (holds L2_PER_L1 Layer2 children as fields)
            │
-    Layer2Class_N_M         (static init:   init_size entries; leaf node)
+    Layer2Class_N_M         (leaf node)
 ```
 
 `RootClass` holds a field instance of every Layer1 class, runs `Class.forName()` on one leaf per L1 class at startup, then calls `computeAll()` to traverse the entire tree.
@@ -245,18 +222,9 @@ IComputable          ITransformable
 
 ## Relationship to Project Leyden
 
-The `-XX:AOTCacheOutput` / `-XX:AOTCache` flags used in the generated `run.sh` invoke JEP 483 (AOT Class Loading & Linking, JDK 24+), which caches loaded and linked class state. The loading/linking pressure in this benchmark — many JARs, deep inheritance chains, interface resolution — is directly attributable to JEP 483.
+The `-XX:AOTCacheOutput` / `-XX:AOTCache` flags in the generated `run.sh` are provided by JEP 514 (AOT Command-Line Ergonomics, JDK 25), which simplified the prior two-step record/create workflow into a single flag. The cache content — loaded and linked class state — is what JEP 483 (AOT Class Loading & Linking, JDK 24) defines.
 
-The static initializers and `Class.forName()` chains are *initialization* cost (`<clinit>`), which JEP 483 does not cache. Any speedup there comes from JEP 514 (AOT Method Compilation) compiling `<clinit>` methods ahead of time.
-
-Use `init_size` to isolate each mechanism:
-
-| `init_size` | What you're measuring | JEP |
-|---|---|---|
-| `0` | Pure class loading & linking | JEP 483 |
-| `> 0` (default: 50) | Loading/linking + `<clinit>` execution | JEP 483 + JEP 514 |
-
-Scaling up `total_l1` and `l2_per_l1` models larger dependency graphs. The delta between the two variants shows what `<clinit>` overhead costs and how much JEP 514 recovers.
+The loading/linking pressure this benchmark generates — many JARs, deep inheritance chains, interface vtable resolution — is exactly what JEP 483 caches. Because there are no static initializers, all measured speedup comes directly from JEP 483.
 
 ## License
 
